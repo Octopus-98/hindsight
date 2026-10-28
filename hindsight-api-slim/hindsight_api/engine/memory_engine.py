@@ -590,7 +590,7 @@ def validate_sql_schema(sql: str) -> None:
                         )
 
 
-from .cross_encoder import CrossEncoderModel
+from .cross_encoder import CrossEncoderModel, recall_log_id
 from .embeddings import Embeddings, create_embeddings_from_env
 from .interface import BankConfigState, BankTemplateImportWrite, MemoryEngineInterface
 
@@ -8857,10 +8857,17 @@ class MemoryEngine(MemoryEngineInterface):
         enable_graph_retrieval = bool(budget_config_dict.get("enable_graph_retrieval", True))
         reranking = _resolve_reranking(budget_config_dict, reranking)
 
+        # One id for every log line of this recall, including a reranker failover
+        # warning, so concurrent recalls can be told apart (#6072). The uuid suffix
+        # keeps two recalls on the same bank within the same millisecond from
+        # colliding on the budgeted_operation key (`recall-{recall_id}`).
+        recall_id = f"{bank_id[:8]}-{int(time.time() * 1000) % 100000}-{uuid.uuid4().hex[:6]}"
+        recall_log_id.set(recall_id)
+
         # Log recall start with tags if present (skip if quiet mode for internal operations)
         if not _quiet:
             tags_info = f", tags={tags} ({tags_match})" if tags else ""
-            logger.info(f"[RECALL {bank_id[:8]}] Starting recall for query: {query[:50]}...{tags_info}")
+            logger.info(f"[RECALL {recall_id}] Starting recall for query: {query[:50]}...{tags_info}")
 
         # Create parent span for recall operation
         from ..tracing import get_tracer
@@ -8920,6 +8927,7 @@ class MemoryEngine(MemoryEngineInterface):
                             enable_text_search=enable_text_search,
                             enable_temporal_retrieval=enable_temporal_retrieval,
                             enable_graph_retrieval=enable_graph_retrieval,
+                            recall_id=recall_id,
                         )
                         get_metrics_collector().record_recall_phase(
                             "search_with_retries", time.time() - _t0_swr2, diagnostic=True
@@ -9095,6 +9103,7 @@ class MemoryEngine(MemoryEngineInterface):
         enable_text_search: bool = True,
         enable_temporal_retrieval: bool = True,
         enable_graph_retrieval: bool = True,
+        recall_id: str = "",
     ) -> RecallResultModel:
         """
         Search implementation with modular retrieval and reranking.
@@ -9159,10 +9168,6 @@ class MemoryEngine(MemoryEngineInterface):
         recall_start = time.time()
 
         # Buffer logs for clean output in concurrent scenarios.
-        # Include a uuid suffix so two recalls on the same bank within the
-        # same millisecond don't collide on the budgeted_operation key
-        # (`recall-{recall_id}`), which would raise "Operation ... already exists".
-        recall_id = f"{bank_id[:8]}-{int(time.time() * 1000) % 100000}-{uuid.uuid4().hex[:6]}"
         log_buffer = []
         tags_info = f", tags={tags}, tags_match={tags_match}" if tags else ""
         log_buffer.append(
@@ -9888,6 +9893,8 @@ class MemoryEngine(MemoryEngineInterface):
                     for mc in merged_candidates
                 ]
                 tracer.add_reranked(results_dict, tracer_merged)
+            if get_config().recall_trace_reranker_provider:
+                tracer.reranker_provider = served_provider
             tracer.add_phase_metric(
                 "reranking",
                 step_duration,

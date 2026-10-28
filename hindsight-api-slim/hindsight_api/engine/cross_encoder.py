@@ -69,6 +69,10 @@ _served_provider: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "hindsight_rerank_served_provider", default=None
 )
 
+# The recall this rerank belongs to, so a failover warning can be joined to the
+# recall's own log lines when several are in flight. Set by recall_async.
+recall_log_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("hindsight_recall_log_id", default=None)
+
 
 class RerankTimeoutError(Exception):
     """An in-process reranker ran out of wall-clock before scoring every pair.
@@ -2145,7 +2149,8 @@ class MultiCrossEncoder(CrossEncoderModel):
                 last_exc = e
                 remaining = len(self._members) - index - 1
                 logger.warning(
-                    "Reranker member %d (%s) failed: %s%s",
+                    "[RECALL %s] Reranker member %d (%s) failed: %s%s",
+                    recall_log_id.get() or "-",
                     index,
                     member.provider_name,
                     e,
