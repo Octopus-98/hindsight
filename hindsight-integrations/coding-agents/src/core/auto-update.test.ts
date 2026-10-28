@@ -99,6 +99,20 @@ describe("npmViewVersion", () => {
     }
   });
 
+  // #6135: npm 12's `npm view <pkg> version --json` is a JSON array, not a quoted string.
+  it("reads a version from either a JSON string or an array", async () => {
+    // npm <12: --json on one field is a quoted string.
+    expect(await npmViewVersion("@x/y", asRealSpawn(npmSpawn(0, '"0.8.2"\n')))).toBe("0.8.2");
+    // npm 12: the same field, pretty-printed as a one-element array.
+    expect(await npmViewVersion("@x/y", asRealSpawn(npmSpawn(0, '[\n  "0.8.2"\n]\n')))).toBe(
+      "0.8.2"
+    );
+    // A multi-match list is oldest-first; pin the last entry.
+    expect(await npmViewVersion("@x/y", asRealSpawn(npmSpawn(0, '["0.6.0", "0.6.1"]')))).toBe(
+      "0.6.1"
+    );
+  });
+
   it("reads a failure as no-version, never as an exception", async () => {
     // non-zero exit (E404, offline, auth failure), with npm's stderr-style error event alongside…
     expect(await npmViewVersion("@x/y", asRealSpawn(npmSpawn(1, "", new Error("npm ERR!"))))).toBe(
@@ -108,8 +122,12 @@ describe("npmViewVersion", () => {
     expect(await npmViewVersion("@x/y", asRealSpawn(npmSpawn(null, "")))).toBe("");
     // …unparseable stdout (an old npm printing something else)…
     expect(await npmViewVersion("@x/y", asRealSpawn(npmSpawn(0, "not json")))).toBe("");
-    // …JSON, but not a single version string…
-    expect(await npmViewVersion("@x/y", asRealSpawn(npmSpawn(0, '["0.6.1", "0.6.0"]')))).toBe("");
+    // …JSON that is neither a version string nor an array of them (object, empty, non-string)…
+    expect(await npmViewVersion("@x/y", asRealSpawn(npmSpawn(0, '{"version":"0.6.1"}')))).toBe("");
+    expect(await npmViewVersion("@x/y", asRealSpawn(npmSpawn(0, "[]")))).toBe("");
+    expect(await npmViewVersion("@x/y", asRealSpawn(npmSpawn(0, "[1]")))).toBe("");
+    // …an array whose last entry fails the release whitelist — same argv guard as a string…
+    expect(await npmViewVersion("@x/y", asRealSpawn(npmSpawn(0, '["1.2.3 && calc"]')))).toBe("");
     // …a "version" carrying shell metacharacters — the whitelist is what stops it, not
     // isNewer: parseInt("3 && calc") is 3, so isNewer("1.2.3 && calc", "1.0.0") is true. The
     // value is headed for an argv entry now and a command line once a Windows shell wrapper
