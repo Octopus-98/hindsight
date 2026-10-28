@@ -8862,7 +8862,9 @@ class MemoryEngine(MemoryEngineInterface):
         # keeps two recalls on the same bank within the same millisecond from
         # colliding on the budgeted_operation key (`recall-{recall_id}`).
         recall_id = f"{bank_id[:8]}-{int(time.time() * 1000) % 100000}-{uuid.uuid4().hex[:6]}"
-        recall_log_id.set(recall_id)
+        # Reset in the finally below: a reflect runs several recalls in one task, and a
+        # stale id would tag a later rerank with a recall that already finished.
+        recall_log_token = recall_log_id.set(recall_id)
 
         # Log recall start with tags if present (skip if quiet mode for internal operations)
         if not _quiet:
@@ -9069,6 +9071,7 @@ class MemoryEngine(MemoryEngineInterface):
             return result
         finally:
             recall_span_context.__exit__(None, None, None)
+            recall_log_id.reset(recall_log_token)
 
     async def _search_with_retries(
         self,
